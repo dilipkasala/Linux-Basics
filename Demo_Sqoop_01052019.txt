@@ -1,0 +1,162 @@
+/*****************************************************************/
+/****** Preping the mysql database  ******************************/
+/*****************************************************************/
+
+sudo service mysqld status
+
+sudo service mysqld start
+
+mysql -u root -p 
+
+password root
+
+CREATE DATABASE CricketAnalysis;
+
+CREATE TABLE `WorldBatsmanAverages` (
+	`SerialNumber` int,
+	`Player` varchar(100),
+	`Matches` int,
+	`Innings` int,
+	`NotOuts` int,
+	`TotalRuns` int,
+	`Hundreds` int,
+	`Fifties` int,
+	`Ducks` int,
+	`MatchType` varchar(10)
+	);
+
+select * from WorldBatsmanAverages;
+--(Empty Set)
+
+LOAD DATA LOCAL INFILE '/home/training/Desktop/data/Sqoop/IP/batsmanpartone.csv'
+INTO TABLE WorldBatsmanAverages
+FIELDS TERMINATED BY '\t'
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n';
+
+select player,TotalRuns from WorldBatsmanAverages;
+
+/*****************************************************************/
+/****** Importing into HDFS         ******************************/
+/*****************************************************************/
+
+--Single Mapper Import
+------------------------
+sqoop import --connect jdbc:mysql://localhost/jan26batch --username 'root' -P --table 'WorldBatsmanAverages' -m 1;
+
+--specifying a target directory
+sqoop import --connect jdbc:mysql://localhost/jan26batch --username 'root' -P --table 'WorldBatsmanAverages' --target-dir '/user/training/dec15sqoopout/WorldBatsmanAverages'  --fields-terminated-by '$' -m 2 ;
+
+hdfs dfs -rm -r /user/training/sqoop
+---------------------------------------------------------------------------------------
+
+Using own delimitor and split-by
+--fields-terminated-by '$'
+sqoop import --connect jdbc:mysql://localhost/dec15batch --username 'root' -P --table 'WorldBatsmanAverages' --target-dir '/user/training/sqoop/WorldBatsmanAverages1'   --fields-terminated-by '$' --split-by SerialNumber -m 2;
+
+-----------------------------------------------------------------------------------------
+
+--Let us do some processing - Use Hive shell now 
+
+CREATE EXTERNAL TABLE WorldBatsmanAverages
+(SerialNumber int,
+Player String,
+Matches int,
+Innings int,
+NotOuts int,
+TotalRuns int,
+Hundreds int,
+Fifties int,
+Ducks int,
+MatchType String
+)
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY '$'
+LOCATION '/user/training/dec15sqoopout/WorldBatsmanAverages';
+
+--need to create the hdfs directory before running this query
+INSERT OVERWRITE DIRECTORY '/user/training/dec15sqoopout/hivesqoopout/'
+SELECT split(player, '#')[0],
+ hundreds 
+ FROM worldbatsmanaverages
+ WHERE regexp_replace(split(player, '#')[1], 'ICC/', '') = '(India)'; 
+
+
+/****************************************************************************************/
+
+Exporting back into mysql using password, selecting a subset of columns!
+
+--create a holding table
+create table IndiaPlayerHundreds (Player Text, Hundreds int);
+
+sqoop export --connect jdbc:mysql://localhost/may18batch --username 'root' --table 'IndiaPlayerHundreds' --export-dir '/user/training/dec15sqoopout/hivesqoopout/' --input-fields-terminated-by ',' -m 1 --columns Player,Hundreds --password 'root'
+
+select * from IndiaPlayerHundreds;
+/****************************************************************************************/
+-----------------------------------------------------------------------------------------
+--Importing table directly into hive
+
+--do some cleanup
+hdfs dfs -rm -r '/user/cloudera/sqoop'
+
+--from hive shell
+drop table worldbatsmanaverages;
+
+sqoop import --connect jdbc:mysql://localhost/dec15batch --username 'root' -P --table 'WorldBatsmanAverages' --target-dir '/user/training/dec15sqopout/WorldBatsmanAverages1/' --hive-import -m 1;
+
+-----------------------------------------------------------------------------------------
+-- Incremental import
+
+--delete target hdfs directory
+hdfs dfs -rm -R /user/cloudera/sqoop
+
+Incremental import
+------------------
+
+LOAD DATA LOCAL INFILE '/home/training/Desktop/data/Sqoop/IP/batsmanparttwo.csv'
+INTO TABLE WorldBatsmanAverages
+FIELDS TERMINATED BY '\t'
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n';
+
+sqoop import --connect jdbc:mysql://localhost/jan26batch --username 'root' -P --table 'WorldBatsmanAverages' --target-dir '/user/training/dec15sqoopout/WorldBatsmanAverages' --incremental append --check-column SerialNumber --where "SerialNumber > 100" -m 1;
+
+or
+
+sqoop import --connect jdbc:mysql://localhost/CricketAnalysis \
+--username 'root' -P --table 'WorldBatsmanAverages' --target-dir '/user/training/sqoop3/WorldBatsmanAverages' \
+--incremental append \
+--check-column SerialNumber \
+--last-value 100 \
+-m 1;
+
+-- Creating a Sqoop Job
+
+sqoop job --create mysqoopdec15 \
+-- import --connect jdbc:mysql://localhost/dec15batch \
+--username 'root' -P --table 'WorldBatsmanAverages' --target-dir '/user/training/dec15sqoopout/WorldBatsmanAverages' \
+--incremental append \
+--check-column SerialNumber \
+-m 1;
+
+--To see if the job was created
+sqoop job --list
+
+--Prep the database : Execute from mysql command prompt
+delete from WorldBatsmanAverages where SerialNumber > 100;
+
+
+--To execute the job
+sqoop job --exec mysqoopjobnew
+
+--Now Add additional records to mysql table
+
+LOAD DATA LOCAL INFILE '/home/training/Desktop/data/Sqoop/IP/batsmanpartthree.csv'
+INTO TABLE WorldBatsmanAverages
+FIELDS TERMINATED BY '\t'
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n';
+
+--Execute the job again!
+sqoop job --exec mysqoopjobnew
+
